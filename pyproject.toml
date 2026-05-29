@@ -1,0 +1,35 @@
+[project]
+name = "pdf-ai-backend"
+version = "0.1.0"
+description = "RAG-powered document Q&A API built with FastAPI, FAISS, and sentence-transformers."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "OLU-DEVX" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["faiss_indexes", "venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests that load real ML models or hit external services",
+]
