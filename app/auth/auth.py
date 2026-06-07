@@ -8,7 +8,9 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
+from app.auth.passwords import PasswordError, assert_password_acceptable
 from app.config import settings
+from app.exceptions import UsernameAlreadyExistsError
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +21,21 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 _users: dict[str, str] = {}  # username → hashed_password
 
 
+def user_count() -> int:
+    return len(_users)
+
+
+def user_exists(username: str) -> bool:
+    return username in _users
+
+
 def register_user(username: str, password: str) -> None:
     if username in _users:
-        raise ValueError("Username already exists")
+        raise UsernameAlreadyExistsError(f"Username '{username}' already exists")
+    try:
+        assert_password_acceptable(password)
+    except PasswordError as e:
+        raise ValueError(str(e)) from e
     _users[username] = pwd_context.hash(password)
     logger.info("Registered user: %s", username)
 
@@ -29,13 +43,21 @@ def register_user(username: str, password: str) -> None:
 def authenticate_user(username: str, password: str) -> bool:
     hashed = _users.get(username)
     if hashed is None:
+        # Verify against a throwaway hash so the timing of a missing user
+        # matches that of a bad password.
+        pwd_context.verify(password, pwd_context.hash("not-a-real-secret"))
         return False
     return pwd_context.verify(password, hashed)
 
 
-def create_access_token(username: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
-    payload = {"sub": username, "exp": expire}
+def create_access_token(username: str, expires_in_minutes: int | None = None) -> str:
+    minutes = expires_in_minutes if expires_in_minutes is not None else settings.access_token_expire_minutes
+    expire = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    payload = {
+        "sub": username,
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+    }
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 
