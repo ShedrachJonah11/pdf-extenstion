@@ -6,10 +6,10 @@ from dataclasses import dataclass
 
 from pypdf import PdfReader
 
-logger = logging.getLogger(__name__)
+from app.constants import CHUNK_OVERLAP_TOKENS, CHUNK_TARGET_TOKENS, MIN_CHUNK_CHARS
+from app.utils.text import normalize_whitespace, strip_control_chars
 
-CHUNK_TARGET_TOKENS = 500
-CHUNK_OVERLAP_TOKENS = 50
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -19,9 +19,47 @@ class TextChunk:
     chunk_index: int
 
 
+@dataclass
+class PdfMetadata:
+    title: str | None
+    author: str | None
+    subject: str | None
+    creator: str | None
+    producer: str | None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "title": self.title,
+            "author": self.author,
+            "subject": self.subject,
+            "creator": self.creator,
+            "producer": self.producer,
+        }
+
+
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: ~4 chars per token for English text."""
-    return len(text) // 4
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def extract_metadata(pdf_bytes: bytes) -> PdfMetadata:
+    """Pull title/author/etc. from the PDF info dict, when available."""
+    reader = PdfReader(pdf_bytes)
+    info = reader.metadata or {}
+    return PdfMetadata(
+        title=info.get("/Title"),
+        author=info.get("/Author"),
+        subject=info.get("/Subject"),
+        creator=info.get("/Creator"),
+        producer=info.get("/Producer"),
+    )
+
+
+def page_count(pdf_bytes: bytes) -> int:
+    """Quick page count without running text extraction."""
+    return len(PdfReader(pdf_bytes).pages)
 
 
 def extract_text(pdf_bytes: bytes) -> list[tuple[int, str]]:
@@ -29,8 +67,8 @@ def extract_text(pdf_bytes: bytes) -> list[tuple[int, str]]:
     reader = PdfReader(pdf_bytes)
     pages: list[tuple[int, str]] = []
     for i, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        text = text.strip()
+        raw = page.extract_text() or ""
+        text = normalize_whitespace(strip_control_chars(raw))
         if text:
             pages.append((i + 1, text))
     total_pages = len(reader.pages)
@@ -43,7 +81,16 @@ def chunk_text(
     target_tokens: int = CHUNK_TARGET_TOKENS,
     overlap_tokens: int = CHUNK_OVERLAP_TOKENS,
 ) -> list[TextChunk]:
-    """Split page text into overlapping chunks of ~target_tokens."""
+    """Split page text into overlapping chunks of ~target_tokens.
+
+    ValueError is raised for nonsensical parameters so the caller cannot
+    accidentally produce a degenerate chunking that loops forever or
+    drops content silently.
+    """
+    if target_tokens <= 0:
+        raise ValueError("target_tokens must be positive")
+    if overlap_tokens < 0 or overlap_tokens >= target_tokens:
+        raise ValueError("overlap_tokens must be in [0, target_tokens)")
     chunks: list[TextChunk] = []
     chunk_index = 0
 
@@ -83,7 +130,7 @@ def chunk_text(
         # Flush remaining
         if current:
             chunk_text_str = " ".join(current).strip()
-            if chunk_text_str:
+            if chunk_text_str and len(chunk_text_str) >= MIN_CHUNK_CHARS:
                 chunks.append(TextChunk(
                     text=chunk_text_str,
                     page=page_num,
